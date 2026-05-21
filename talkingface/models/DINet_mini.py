@@ -215,11 +215,6 @@ class DINet_mini_pipeline(nn.Module):
         self.face_fusion_tensor = face_fusion_tensor.to("cuda" if cuda else "cpu")
         self.mouth_fusion_tensor = mouth_fusion_tensor.to("cuda" if cuda else "cpu")
 
-        self.logo_tensor = cv2.imread(os.path.join(current_dir, "../../mini_live/MatesX_logo.png"), cv2.IMREAD_UNCHANGED)
-        self.logo_tensor = cv2.cvtColor(self.logo_tensor, cv2.COLOR_BGRA2RGBA)
-        self.logo_tensor = torch.from_numpy(self.logo_tensor / 255.).float().permute(2, 0, 1).unsqueeze(0)
-        self.logo_tensor = self.logo_tensor.to("cuda" if cuda else "cpu")
-
     def ref_input(self, ref_tensor):
         self.infer_model.ref_input(ref_tensor)
 
