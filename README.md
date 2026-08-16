@@ -30,6 +30,7 @@ DHLive_mini手机浏览器直接推理演示 [bilibili video](https://www.bilibi
 - 2025-09-23 超轻量级多端数字人对话引擎[MatesX](https://github.com/kleinlee/MatesX)已开源。适配 Windows/macOS/iOS/Android/小程序
 - 2026-05-07 改进内存消耗，增加抠图和前后景分离。
 - 2026-05-12 升级到mini2.0，提升分辨率、减小资源占用、效果更稳定、对IOS支持更好
+- 2026-08-16 去除对mediapipe的依赖，使用更好的抠图算法matanyone2
 
 ## 数字人方案对比
 
@@ -68,10 +69,12 @@ DHLive_mini手机浏览器直接推理演示 [bilibili video](https://www.bilibi
  ```
  checkpoint/
  ├── DINet_mini/
- │   └── epoch_40_new.pth                     # 视频生成模型
+ │   └── epoch_40_new.pth                 # 视频生成模型
  ├── lstm/
  │   └── lstm_model_epoch_325.pkl         # 语音特征模型
- ├── rvm_resnet50.pth                     # 绿幕扣除模型
+ ├── scrfd_2.5g_kps.onnx                  # 人脸检测模型
+ ├── face_landmarker_256x256.pt           # 人脸mesh关键点模型，替代mediapipe
+ ├── matanyone2.pth                       # 绿幕扣除模型
   ```
  
 

@@ -28,6 +28,7 @@ DHLive_mini direct inference demo on mobile browser [bilibili video](https://www
 - 2025-09-23 The ultra-lightweight multi-platform digital human dialogue engine [MatesX](https://github.com/kleinlee/MatesX) has been open-sourced. It is the evolution of DH_live. Memory · Expression · Action · Multi-platform · Lightweight, compatible with Windows/macOS/iOS/Android/Mini-program
 - 2026-05-07 Improved memory consumption, added matting and foreground/background separation.
 - 2026-05-12 Upgraded to mini2.0, with improved resolution, reduced resource usage, more stable performance, and better iOS support.
+- 2026-08-16 Remove dependency on MediaPipe and use a better matting algorithm, matanyone2.
 ## Comparison of Digital Human Solutions
 
 | Solution Name | Single Frame Compute (Mflops) | Usage Method | Face Resolution | Applicable Devices |
@@ -62,12 +63,14 @@ All checkpoint files are moved to [BaiduDrive](https://pan.baidu.com/s/1jH3WrIAf
 
 model dir：
  ```
- checkpoint/
+checkpoint/
  ├── DINet_mini/
- │   └── epoch_40_new.pth                     # 视频生成模型
+ │   └── epoch_40_new.pth                 # Mini cnn model
  ├── lstm/
- │   └── lstm_model_epoch_325.pkl         # 语音特征模型
- ├── rvm_resnet50.pth                     # 绿幕扣除模型
+ │   └── lstm_model_epoch_325.pkl         # Speech feature model
+ ├── scrfd_2.5g_kps.onnx                  # Face detection model
+ ├── face_landmarker_256x256.pt           # Face mesh landmark model (replaces MediaPipe)
+ ├── matanyone2.pth                       # Green screen matting model
   ```
     
 ## Easy Usage (Gradio)

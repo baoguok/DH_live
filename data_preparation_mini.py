@@ -4,13 +4,15 @@ import numpy as np
 import cv2
 import argparse
 import os
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # 屏蔽 INFO 和 WARNING
-os.environ['GLOG_minloglevel'] = '2'      # 屏蔽 glog 日志
 import math
 import pickle
-import mediapipe as mp
 import shutil
 import glob
+
+from talkingface.util.face_detect_scrfd import SCRFD, FaceDetectionError as SCRFDFaceDetectionError
+from talkingface.util.face_mesh_478 import predict_mesh
+from talkingface.utils import smooth_array
+
 MODULO_N = 16
 # 自定义异常类
 class VideoProcessingError(Exception):
@@ -37,56 +39,34 @@ class EnvironmentError(VideoProcessingError):
     """环境配置错误"""
     pass
 
-mp_face_mesh = mp.solutions.face_mesh
-mp_face_detection = mp.solutions.face_detection
+# 全局 SCRFD 检测器（懒初始化，整个流程复用）
+_detector = None
+
+def _get_detector(confThreshold: float = 0.5, nmsThreshold: float = 0.5) -> SCRFD:
+    global _detector
+    if _detector is None:
+        _detector = SCRFD(None, confThreshold=confThreshold, nmsThreshold=nmsThreshold)
+    return _detector
 
 
 def detect_face(frame: np.ndarray, min_detection_confidence: float = 0.5) -> list:
-    """人脸检测并验证有效性"""
-    with mp_face_detection.FaceDetection(
-            model_selection=1,
-            min_detection_confidence=min_detection_confidence
-    ) as face_detection:
+    """人脸检测并验证有效性
 
-        results = face_detection.process(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+    使用 SCRFD 检测单张人脸，返回像素坐标 [xmin, xmax, ymin, ymax]。
 
-        # 人脸数量检查
-        if not results.detections:
-            raise FaceDetectionError("未检测到人脸")
-        if len(results.detections) > 1:
-            raise FaceDetectionError("检测到多个人脸")
+    Args:
+        frame: BGR 图像
+        min_detection_confidence: 置信度阈值
 
-        detection = results.detections[0]
-        rect = detection.location_data.relative_bounding_box
-        out_rect = [
-            rect.xmin,
-            rect.xmin + rect.width,
-            rect.ymin,
-            rect.ymin + rect.height
-        ]
-
-        # 关键点验证
-        nose = mp_face_detection.get_key_point(
-            detection, mp_face_detection.FaceKeyPoint.NOSE_TIP)
-        left_eye = mp_face_detection.get_key_point(
-            detection, mp_face_detection.FaceKeyPoint.LEFT_EYE)
-        right_eye = mp_face_detection.get_key_point(
-            detection, mp_face_detection.FaceKeyPoint.RIGHT_EYE)
-
-        if nose.x > left_eye.x or nose.x < right_eye.x:
-            raise FaceDetectionError("人脸角度不符合要求，请提供正脸图片")
-
-        # 边界检查
-        h, w = frame.shape[:2]
-        if (out_rect[0] < 0 or out_rect[2] < 0
-                or out_rect[1] > 1 or out_rect[3] > 1):
-            raise FaceDetectionError("人脸区域超出画面边界")
-
-        # 尺寸检查
-        if rect.width * w < 80 or rect.height * h < 80:
-            raise FaceDetectionError("人脸尺寸不能低于80*80像素")
-
-        return out_rect
+    Returns:
+        [xmin, xmax, ymin, ymax] 像素坐标列表
+    """
+    detector = _get_detector(confThreshold=min_detection_confidence)
+    try:
+        xmin, ymin, xmax, ymax, _ = detector.detect_single_face(frame)
+    except SCRFDFaceDetectionError as e:
+        raise FaceDetectionError(str(e)) from e
+    return [xmin, xmax, ymin, ymax]
 
 
 def calc_face_interact(face0, face1):
@@ -100,29 +80,50 @@ def calc_face_interact(face0, face1):
 
 
 def detect_face_mesh(frame: np.ndarray) -> np.ndarray:
-    """面部网格检测"""
-    with mp_face_mesh.FaceMesh(
-            static_image_mode=True,
-            max_num_faces=1,
-            refine_landmarks=True,
-            min_detection_confidence=0.5
-    ) as face_mesh:
+    """面部网格检测，返回 (478, 3) 关键点
 
-        results = face_mesh.process(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-        pts_3d = np.zeros((478, 3))
+    使用 SCRFD 人脸框 + FaceLandmarkerNet 478 点预测。
+    需要先检测到人脸框（通过 detect_face 或直接提供 bbox）。
 
-        if not results.multi_face_landmarks:
-            raise FaceMeshDetectionError("未检测到面部网格")
+    Args:
+        frame: BGR 图像
 
-        image_height, image_width = frame.shape[:2]
-        for idx, landmark in enumerate(results.multi_face_landmarks[0].landmark):
-            pts_3d[idx] = [
-                min(math.floor(landmark.x * image_width), image_width - 1),
-                min(math.floor(landmark.y * image_height), image_height - 1),
-                min(math.floor(landmark.z * image_width), image_width - 1)
-            ]
-        return pts_3d
+    Returns:
+        pts_3d: (478, 3) 关键点数组，x/y 为像素坐标，z 为深度
+    """
+    detector = _get_detector()
+    bboxes, scores, kpss = detector._detect_raw(frame)
 
+    if len(bboxes) == 0:
+        raise FaceMeshDetectionError("未检测到人脸，无法进行面部网格检测")
+
+    bbox = bboxes[0]  # [x, y, w, h]
+    kps = kpss[0]     # (5, 2)
+
+    # 转为 (x1, y1, x2, y2) 格式
+    bbox_xyxy = np.array([bbox[0], bbox[1], bbox[0] + bbox[2], bbox[1] + bbox[3]], dtype=np.float32)
+    landmarks, face_score = predict_mesh(frame, bbox_xyxy, kps)
+
+    if face_score[0] < 0.5:
+        raise FaceMeshDetectionError("面部网格检测置信度过低")
+
+    # landmarks: (1, 478, 3) → (478, 3)
+    pts_3d = landmarks[0].astype(np.float32)
+    return pts_3d
+
+def save_thumbnail(frame, vid_width, vid_height, output_thumbnail):
+    if vid_width > vid_height:
+        new_width = 480
+        new_height = int((vid_height / vid_width) * 480)
+    else:
+        new_height = 480
+        new_width = int((vid_width / vid_height) * 480)
+
+    # Resize the frame
+    resized_frame = cv2.cvtColor(frame, cv2.COLOR_RGBA2BGRA)
+    resized_frame = cv2.resize(resized_frame, (new_width, new_height))
+    cv2.imwrite(output_thumbnail, resized_frame)
+    
 def encode_binary_pixels(frame, width, modulo_value):
     """
     在右上角2x2区域编码二进制序号
@@ -167,33 +168,37 @@ def extract_from_video(
         pts_3d = np.zeros((total_frames, 478, 3))
         face_rect = None
         for frame_index in tqdm.tqdm(range(total_frames)):
-            frame_bgr = cv2.imread(img_list[frame_index])
-            vid_width = frame_bgr.shape[1]
-            vid_height = frame_bgr.shape[0]
+            frame = cv2.imread(img_list[frame_index], cv2.IMREAD_UNCHANGED)  # 按帧读取视频
+            if frame.shape[2] == 3:
+                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGBA)
+            else:
+                frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2RGBA)
+            vid_width = frame.shape[1]
+            vid_height = frame.shape[0]
             if frame_index == 0:
                 try:
-                    rect = detect_face(frame_bgr[:, :, :3], 0.25)
-                    x_min = int(rect[0] * vid_width)
-                    y_min = int(rect[2] * vid_height)
-                    x_max = int(rect[1] * vid_width)
-                    y_max = int(rect[3] * vid_height)
+                    rect = detect_face(frame[:, :, :3], 0.25)
+                    # detect_face 现在返回像素坐标 [xmin, xmax, ymin, ymax]
+                    x_min, x_max, y_min, y_max = rect
                 except FaceDetectionError:
                     # 尝试裁剪后检测
-                    cropped = frame_bgr[
-                              int(0.1 * vid_height):int(0.9 * vid_height),
-                              int(0.1 * vid_width):int(0.9 * vid_width),
-                              :3]
+                    crop_y0 = int(0.1 * vid_height)
+                    crop_y1 = int(0.9 * vid_height)
+                    crop_x0 = int(0.1 * vid_width)
+                    crop_x1 = int(0.9 * vid_width)
+                    cropped = frame[crop_y0:crop_y1, crop_x0:crop_x1, :3]
                     try:
                         rect = detect_face(cropped, 0.25)
                     except FaceDetectionError as e:
                         raise FirstFrameFaceDetectionError("首帧人脸检测失败") from e
 
-                    # 转换坐标到原图
-                    x_min = int(rect[0] * vid_width + 0.1 * vid_width)
-                    y_min = int(rect[2] * vid_height + 0.1 * vid_height)
-                    x_max = int(rect[1] * vid_width + 0.1 * vid_width)
-                    y_max = int(rect[3] * vid_height + 0.1 * vid_height)
+                    # 裁剪图上的像素坐标 + 偏移 = 原图坐标
+                    x_min = rect[0] + crop_x0
+                    x_max = rect[1] + crop_x0
+                    y_min = rect[2] + crop_y0
+                    y_max = rect[3] + crop_y0
 
+                # save_thumbnail(frame, vid_width, vid_height, output_thumbnail)
                 y_mid = (y_min + y_max) / 2.
                 x_mid = (x_min + x_max) / 2.
                 crop_size = max(x_max - x_min, y_max - y_min) * 0.8
@@ -205,7 +210,7 @@ def extract_from_video(
 
             # 裁剪人脸区域
             x0, y0, x1, y1 = face_rect
-            face_region = frame_bgr[y0:y1, x0:x1, :3]
+            face_region = frame[y0:y1, x0:x1, :3]
             # print(y_min, y_max, x_min, x_max)
             # cv2.imshow("s", frame_face)
             # cv2.waitKey(10)
@@ -231,22 +236,22 @@ def extract_from_video(
                 xy_displacement = np.sqrt(frame_diff[:, 0] ** 2 + frame_diff[:, 1] ** 2)
                 xy_displacement = xy_displacement.mean()
                 if xy_displacement > crop_size/6:
-                    cv2.imshow("frame", frame_bgr)
-                    cv2.waitKey(0)
-                    cv2.destroyAllWindows()
+                    # cv2.imshow("frame", frame_bgr)
+                    # cv2.waitKey(0)
+                    # cv2.destroyAllWindows()
                     raise VideoProcessingError(f"第{frame_index}帧面部范围大幅度改变，请检查")
 
 
             if matting:
-                from talkingface.RVM import process_img_matting
-                final_rgba = process_img_matting(cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGBA), frame_index == 0)
+                from MatAnyone2.run import process_img_matting
+                final_rgba = process_img_matting(frame, frame_index == 0)
                 green_bgr = np.zeros((final_rgba.shape[0], final_rgba.shape[1], 3), dtype=np.uint8)
                 green_bgr[:, :, 1] = 255
 
                 alpha = final_rgba[:, :, 3:4] / 255.0  # Normalize alpha to [0, 1]
                 final_bgr = (green_bgr * (1 - alpha) + final_rgba[:, :, :3][:, :, ::-1] * alpha).astype(np.uint8)
             else:
-                final_bgr = frame_bgr
+                final_bgr = frame[:, :, :3][:, :, ::-1]
 
             modulo_value = frame_index % MODULO_N
             encode_binary_pixels(final_bgr, vid_width, modulo_value)
@@ -262,7 +267,11 @@ def extract_from_video(
         # 保存关键点
         with open(output_pkl_path, "wb") as f:
             pickle.dump(pts_3d, f)
-
+            
+        pts_3d = pts_3d.reshape(len(pts_3d), -1)
+        smooth_array_ = smooth_array(pts_3d, weight=[0.01, 0.08, 0.82, 0.08, 0.01])
+        pts_3d = smooth_array_.reshape(len(pts_3d), 478, 3)
+        
         fps = 25
         crf = 18
         ffmpeg_cmd = [
