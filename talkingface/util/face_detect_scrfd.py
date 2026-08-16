@@ -124,11 +124,12 @@ class SCRFD():
 
     def _detect_raw(self, srcimg):
         """核心检测，返回 (bboxes_nms, scores_nms, kpss_nms) 经 NMS 后的结果
+        srcimg: (H, W, 3) RGB格式
         bboxes: (N, 4) 每行为 [x, y, w, h]
         kpss: (N, 5, 2) 每行为 5 个关键点 (left_eye, right_eye, nose, left_mouth, right_mouth)
         """
         img, newh, neww, padh, padw = self.resize_image(srcimg)
-        blob = cv2.dnn.blobFromImage(img, 1.0 / 128, (self.inpWidth, self.inpHeight), (127.5, 127.5, 127.5), swapRB=True)
+        blob = cv2.dnn.blobFromImage(img, 1.0 / 128, (self.inpWidth, self.inpHeight), (127.5, 127.5, 127.5), swapRB=False)
         self.net.setInput(blob)
         outs = self.net.forward(self.net.getUnconnectedOutLayersNames())
 

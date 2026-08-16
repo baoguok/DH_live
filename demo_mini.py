@@ -130,7 +130,7 @@ def interface_mini(path, wav_path, output_video_path):
     for index2_ in range(len(bs_array)):
         frame_index = index2_ % len(mat_list)
         bs = np.zeros([12], dtype=np.float32)
-        bs[:6] = bs_array[frame_index, :6]
+        bs[:6] = bs_array[index2_, :6]
 
         frame_verts = (blendshape * bs[:6].reshape(6, 1, 1)).sum(axis = 0)
         y_bias = frame_verts[4, 1] - frame_verts[5, 1]

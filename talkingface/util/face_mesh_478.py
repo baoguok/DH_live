@@ -211,7 +211,7 @@ def predict_mesh(
     input_size: int = 256,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Dense landmarks with the PyTorch net. Returns (landmarks (N, K, 3), scores (N,)).
-
+    image: RGB image, shape (H, W, 3).
     K is 478 for `FaceLandmarkerNet`
     """
     global net_face_mesh
@@ -225,7 +225,7 @@ def predict_mesh(
     blobs, inverses = [], []
 
     crop, inverse = warp_roi(image, roi, input_size)
-    blobs.append(np.transpose(crop[:, :, ::-1].astype(np.float32) / 255.0, (2, 0, 1)))
+    blobs.append(np.transpose(crop.astype(np.float32) / 255.0, (2, 0, 1)))
     inverses.append(inverse)
 
     landmarks, logits = (t.numpy() for t in net_face_mesh(torch.from_numpy(np.stack(blobs))))
